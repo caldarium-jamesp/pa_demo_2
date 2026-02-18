@@ -886,12 +886,6 @@ function App() {
                                 <p className="mt-1 whitespace-pre-wrap text-sm text-[#414042]">
                                   {row.policy_text || "-"}
                                 </p>
-                                <p className="mt-3 text-xs font-semibold uppercase tracking-[0.08em] text-[#808184]">
-                                  Confidence Score
-                                </p>
-                                <p className="mt-1 text-sm text-[#414042]">
-                                  {Number(row.confidence).toFixed(2)}
-                                </p>
                               </td>
                             </tr>
                           )}
