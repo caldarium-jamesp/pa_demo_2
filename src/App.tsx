@@ -1,4 +1,3 @@
-import iconLogo from "./assets/logo_black.png";
 import wordmarkLogo from "./assets/name_logo.png";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -51,6 +50,24 @@ type AnalysisResponse = {
   case_id: string;
   approval_clauses: ClauseEvaluation[];
   exclusion_clauses: ClauseEvaluation[];
+  pa_required?: boolean;
+  coverage_status?: string;
+};
+
+type UploadFilesResponse = {
+  case_id: string;
+  message: string;
+};
+
+type CreateCaseFormValues = {
+  patientName: string;
+  payer: "" | "Aetna" | "Humana";
+  cptCode: string;
+};
+
+type CreateCaseFormErrors = {
+  payer?: string;
+  cptCode?: string;
 };
 
 const API_BASE_URL =
@@ -78,6 +95,33 @@ function formatConceptLabel(conceptId: string): string {
       return normalized.charAt(0).toUpperCase() + normalized.slice(1);
     })
     .join(" ");
+}
+
+function formatPayerLabel(payer: string): string {
+  if (!payer) {
+    return payer;
+  }
+
+  const normalized = payer.toLowerCase();
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+function formatCaseStatusLabel(status: string): string {
+  if (!status) {
+    return status;
+  }
+
+  const normalized = status.toLowerCase();
+
+  if (normalized === "not_covered:non_covered") {
+    return "Not Covered";
+  }
+
+  if (normalized === "no_pa_required") {
+    return "No PA Required";
+  }
+
+  return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
 function getStatusFromConfidence(confidence: number): string {
@@ -120,6 +164,24 @@ async function extractErrorMessage(
   return fallback;
 }
 
+function validateCreateCaseForm(
+  values: CreateCaseFormValues,
+): CreateCaseFormErrors {
+  const errors: CreateCaseFormErrors = {};
+
+  if (!values.payer) {
+    errors.payer = "Choose a payer.";
+  }
+
+  if (!values.cptCode.trim()) {
+    errors.cptCode = "Enter a CPT code.";
+  } else if (!/^[a-z0-9]+$/i.test(values.cptCode.trim())) {
+    errors.cptCode = "CPT code must be alphanumeric.";
+  }
+
+  return errors;
+}
+
 function App() {
   const [activePage, setActivePage] = useState<"cases" | "document" | "results">(
     "cases",
@@ -144,6 +206,15 @@ function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [createCaseLoading, setCreateCaseLoading] = useState(false);
   const [createCaseError, setCreateCaseError] = useState<string | null>(null);
+  const [isCreateCaseModalOpen, setIsCreateCaseModalOpen] = useState(false);
+  const [createCaseForm, setCreateCaseForm] = useState<CreateCaseFormValues>({
+    patientName: "Unknown",
+    payer: "",
+    cptCode: "",
+  });
+  const [createCaseFormErrors, setCreateCaseFormErrors] = useState<
+    CreateCaseFormErrors
+  >({});
   const [analysisResultsByCaseId, setAnalysisResultsByCaseId] = useState<
     Record<string, AnalysisResponse>
   >({});
@@ -223,7 +294,7 @@ function App() {
     }));
   }, []);
 
-  const runCaseAnalysis = useCallback(async (caseId: string, payer?: string) => {
+  const runCaseAnalysis = useCallback(async (caseId: string) => {
     setAnalysisLoadingByCaseId((current) => ({
       ...current,
       [caseId]: true,
@@ -234,17 +305,7 @@ function App() {
     }));
 
     try {
-      const query = new URLSearchParams();
-      if (payer) {
-        query.set("policy_name", payer);
-      }
-
-      const queryString = query.toString();
-      const endpoint = queryString
-        ? `${API_BASE_URL}/run_case/${caseId}?${queryString}`
-        : `${API_BASE_URL}/run_case/${caseId}`;
-
-      const response = await fetch(endpoint, {
+      const response = await fetch(`${API_BASE_URL}/run_case/${caseId}`, {
         method: "POST",
       });
 
@@ -278,46 +339,41 @@ function App() {
     }
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
+  const fetchCases = useCallback(async () => {
+    setCasesLoading(true);
+    setCasesError(null);
 
-    async function fetchCases() {
-      setCasesLoading(true);
-      setCasesError(null);
-
-      try {
-        const response = await fetch(`${API_BASE_URL}/cases`);
-        if (!response.ok) {
-          throw new Error(`Failed to fetch cases (${response.status})`);
-        }
-
-        const payload = (await response.json()) as CaseSummary[];
-        if (!cancelled) {
-          setCases(payload);
-
-          if (payload.length > 0 && !selectedCaseId) {
-            setSelectedCaseId(payload[0].case_id);
-          }
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setCasesError(
-            error instanceof Error ? error.message : "Unable to load cases",
-          );
-        }
-      } finally {
-        if (!cancelled) {
-          setCasesLoading(false);
-        }
+    try {
+      const response = await fetch(`${API_BASE_URL}/cases`);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch cases (${response.status})`);
       }
+
+      const payload = (await response.json()) as CaseSummary[];
+      setCases(payload);
+      setSelectedCaseId((current) => {
+        if (payload.length === 0) {
+          return null;
+        }
+
+        if (current && payload.some((caseItem) => caseItem.case_id === current)) {
+          return current;
+        }
+
+        return payload[0].case_id;
+      });
+    } catch (error) {
+      setCasesError(
+        error instanceof Error ? error.message : "Unable to load cases",
+      );
+    } finally {
+      setCasesLoading(false);
     }
+  }, []);
 
+  useEffect(() => {
     void fetchCases();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedCaseId]);
+  }, [fetchCases]);
 
   useEffect(() => {
     if (!selectedCaseId) {
@@ -424,11 +480,10 @@ function App() {
       return;
     }
 
-    void runCaseAnalysis(selectedCaseId, selectedCase?.payer);
+    void runCaseAnalysis(selectedCaseId);
   }, [
     activePage,
     runCaseAnalysis,
-    selectedCase?.payer,
     selectedCaseAnalysisLoading,
     selectedCaseId,
     selectedCaseResult,
@@ -438,8 +493,73 @@ function App() {
     setExpandedResultRowIds({});
   }, [selectedCaseId]);
 
+  const handleBackToCaseList = useCallback(() => {
+    setActivePage("cases");
+    void fetchCases();
+  }, [fetchCases]);
+
+  function openCreateCaseModal() {
+    setCreateCaseError(null);
+    setCreateCaseFormErrors({});
+    setIsCreateCaseModalOpen(true);
+  }
+
+  function closeCreateCaseModal() {
+    if (createCaseLoading) {
+      return;
+    }
+
+    setIsCreateCaseModalOpen(false);
+  }
+
+  function handleCreateCaseFieldChange(
+    field: keyof CreateCaseFormValues,
+    value: string,
+  ) {
+    setCreateCaseForm((current) => ({
+      ...current,
+      [field]: value,
+    }));
+    setCreateCaseFormErrors((current) => ({
+      ...current,
+      [field === "payer" ? "payer" : field === "cptCode" ? "cptCode" : field]:
+        undefined,
+    }));
+  }
+
+  function handleCreateCaseDetailsSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const errors = validateCreateCaseForm(createCaseForm);
+    if (Object.keys(errors).length > 0) {
+      setCreateCaseFormErrors(errors);
+      return;
+    }
+
+    setCreateCaseFormErrors({});
+    setIsCreateCaseModalOpen(false);
+    fileInputRef.current?.click();
+  }
+
   async function uploadNewCase(fileList: FileList | null) {
     if (!fileList || fileList.length === 0) {
+      return;
+    }
+
+    const normalizedForm = {
+      patientName: createCaseForm.patientName.trim() || "Unknown",
+      payer: createCaseForm.payer,
+      cptCode: createCaseForm.cptCode.trim(),
+    };
+    const validationErrors = validateCreateCaseForm({
+      patientName: normalizedForm.patientName,
+      payer: normalizedForm.payer,
+      cptCode: normalizedForm.cptCode,
+    });
+
+    if (Object.keys(validationErrors).length > 0) {
+      setCreateCaseFormErrors(validationErrors);
+      setIsCreateCaseModalOpen(true);
       return;
     }
 
@@ -452,7 +572,13 @@ function App() {
         formData.append("files", file);
       });
 
-      const response = await fetch(`${API_BASE_URL}/analyze_files`, {
+      const queryParams = new URLSearchParams({
+        patient_name: normalizedForm.patientName,
+        payer: normalizedForm.payer,
+        cpt_code: normalizedForm.cptCode,
+      });
+
+      const response = await fetch(`${API_BASE_URL}/upload_files?${queryParams.toString()}`, {
         method: "POST",
         body: formData,
       });
@@ -466,11 +592,7 @@ function App() {
         );
       }
 
-      const payload = (await response.json()) as AnalysisResponse;
-      setAnalysisResultsByCaseId((currentResults) => ({
-        ...currentResults,
-        [payload.case_id]: payload,
-      }));
+      const payload = (await response.json()) as UploadFilesResponse;
       setAnalysisErrorByCaseId((current) => ({
         ...current,
         [payload.case_id]: null,
@@ -500,9 +622,6 @@ function App() {
         <header className="flex flex-col gap-8">
           <div className="flex flex-wrap items-center justify-between gap-6">
             <div className="flex items-center gap-4">
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#00ff7d] p-2 shadow-[0_0_20px_rgba(0,255,125,0.35)]">
-                <img src={iconLogo} alt="Company icon" className="h-8 w-8" />
-              </div>
               <img src={wordmarkLogo} alt="Company logo" className="h-10 w-auto" />
             </div>
             <div className="flex items-center gap-3 text-xs uppercase tracking-[0.35em] text-[#808184]">
@@ -548,7 +667,7 @@ function App() {
                 {activePage !== "cases" && (
                   <button
                     type="button"
-                    onClick={() => setActivePage("cases")}
+                    onClick={handleBackToCaseList}
                     className="rounded-full border border-[#e0e0e2] bg-white px-6 py-3 text-sm font-semibold text-[#414042] transition hover:border-[#6dffb5]"
                   >
                     Back to case list
@@ -586,7 +705,7 @@ function App() {
 
               <button
                 type="button"
-                onClick={() => fileInputRef.current?.click()}
+                onClick={openCreateCaseModal}
                 disabled={createCaseLoading}
                 className="mt-auto inline-flex items-center justify-center rounded-full bg-[#00ff7d] px-4 py-2 text-sm font-semibold text-[#414042] transition hover:bg-[#6dffb5] disabled:cursor-not-allowed disabled:opacity-70"
               >
@@ -612,24 +731,18 @@ function App() {
               </p>
             )}
 
-            {!casesLoading && !casesError && cases.length === 0 && (
-              <p className="col-span-full rounded-2xl border border-[#e0e0e2] bg-white/90 p-6 text-sm">
-                No cases returned by the API yet.
-              </p>
-            )}
-
             {cases.map((caseItem) => (
               <article
                 key={caseItem.case_id}
                 className="group flex h-full flex-col gap-6 rounded-3xl border border-[#e0e0e2] bg-white/90 p-6 shadow-[0_18px_35px_rgba(65,64,66,0.15)] transition hover:-translate-y-1 hover:border-[#6dffb5] hover:shadow-[0_18px_40px_rgba(0,255,125,0.2)]"
               >
                 <div className="flex items-start justify-between gap-4">
-                  <div>
+                <div>
                 <h2 className="text-lg font-semibold text-[#2e2d30]">
                   {caseItem.patient_name || "Unknown patient"}
                 </h2>
-                <p className="text-sm text-[#808184]">Payer: {caseItem.payer}</p>
-                <p className="text-sm text-[#808184]">Status: {caseItem.status}</p>
+                <p className="text-sm text-[#808184]">Payer: {formatPayerLabel(caseItem.payer)}</p>
+                <p className="text-sm text-[#808184]">Status: {formatCaseStatusLabel(caseItem.status)}</p>
               </div>
               <span className="rounded-full border border-[#6dffb5] bg-[#f3fff8] px-3 py-1 text-xs font-semibold text-[#2e2d30]">
                 CPT {caseItem.cpt_code}
@@ -676,7 +789,7 @@ function App() {
               </div>
               {selectedCase && (
                 <span className="rounded-full border border-[#6dffb5] bg-[#f3fff8] px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] text-[#2e2d30]">
-                  {selectedCase.payer}
+                  {formatPayerLabel(selectedCase.payer)}
                 </span>
               )}
             </div>
@@ -755,7 +868,7 @@ function App() {
                   Case results
                 </p>
                 <p className="mt-2 text-xs font-semibold uppercase tracking-[0.2em] text-[#808184]">
-                  CPT-72148
+                  {selectedCase ? `CPT-${selectedCase.cpt_code}` : "CPT"}
                 </p>
                 <h2 className="mt-2 text-2xl font-semibold text-[#2e2d30]">
                   {selectedCase
@@ -766,14 +879,14 @@ function App() {
               <div className="flex flex-wrap items-center gap-3">
                 {selectedCase && (
                   <span className="rounded-full border border-[#6dffb5] bg-[#f3fff8] px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] text-[#2e2d30]">
-                    {selectedCase.payer}
+                    {formatPayerLabel(selectedCase.payer)}
                   </span>
                 )}
                 {selectedCaseId && (
                   <button
                     type="button"
                     onClick={() =>
-                      void runCaseAnalysis(selectedCaseId, selectedCase?.payer)
+                      void runCaseAnalysis(selectedCaseId)
                     }
                     disabled={selectedCaseAnalysisLoading}
                     className="rounded-full border border-[#e0e0e2] bg-white px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-[#414042] transition hover:border-[#6dffb5] disabled:cursor-not-allowed disabled:opacity-70"
@@ -886,6 +999,12 @@ function App() {
                                 <p className="mt-1 whitespace-pre-wrap text-sm text-[#414042]">
                                   {row.policy_text || "-"}
                                 </p>
+                                <p className="mt-3 text-xs font-semibold uppercase tracking-[0.08em] text-[#808184]">
+                                  Confidence Score
+                                </p>
+                                <p className="mt-1 text-sm text-[#414042]">
+                                  {Number(row.confidence).toFixed(2)}
+                                </p>
                               </td>
                             </tr>
                           )}
@@ -897,6 +1016,114 @@ function App() {
               </div>
             )}
           </section>
+        )}
+
+        {isCreateCaseModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#2e2d30]/50 px-4 py-8 backdrop-blur-sm">
+            <div className="w-full max-w-lg rounded-[28px] border border-[#d7d8da] bg-white p-6 shadow-[0_24px_60px_rgba(46,45,48,0.24)] sm:p-8">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.3em] text-[#808184]">
+                    New case details
+                  </p>
+                  <h2 className="mt-2 text-2xl font-semibold text-[#2e2d30]">
+                    Enter case parameters
+                  </h2>
+                  <p className="mt-2 text-sm text-[#808184]">
+                    Complete these fields before selecting documents to upload.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeCreateCaseModal}
+                  disabled={createCaseLoading}
+                  className="rounded-full border border-[#d7d8da] px-3 py-1 text-sm font-medium text-[#414042] transition hover:border-[#6dffb5] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Close
+                </button>
+              </div>
+
+              <form className="mt-6 space-y-5" onSubmit={handleCreateCaseDetailsSubmit}>
+                <label className="block">
+                  <span className="mb-2 block text-sm font-semibold text-[#2e2d30]">
+                    Name
+                  </span>
+                  <input
+                    type="text"
+                    value={createCaseForm.patientName}
+                    onChange={(event) =>
+                      handleCreateCaseFieldChange("patientName", event.currentTarget.value)
+                    }
+                    className="w-full rounded-2xl border border-[#d7d8da] bg-[#f8f8f9] px-4 py-3 text-sm text-[#414042] outline-none transition focus:border-[#00ff7d] focus:bg-white"
+                    placeholder="Unknown"
+                  />
+                </label>
+
+                <label className="block">
+                  <span className="mb-2 block text-sm font-semibold text-[#2e2d30]">
+                    Payer
+                  </span>
+                  <select
+                    value={createCaseForm.payer}
+                    onChange={(event) =>
+                      handleCreateCaseFieldChange(
+                        "payer",
+                        event.currentTarget.value as CreateCaseFormValues["payer"],
+                      )
+                    }
+                    className="w-full rounded-2xl border border-[#d7d8da] bg-[#f8f8f9] px-4 py-3 text-sm text-[#414042] outline-none transition focus:border-[#00ff7d] focus:bg-white"
+                  >
+                    <option value="">Select a payer</option>
+                    <option value="Aetna">Aetna</option>
+                    <option value="Humana">Humana</option>
+                  </select>
+                  {createCaseFormErrors.payer && (
+                    <p className="mt-2 text-sm text-[#9b2c2c]">
+                      {createCaseFormErrors.payer}
+                    </p>
+                  )}
+                </label>
+
+                <label className="block">
+                  <span className="mb-2 block text-sm font-semibold text-[#2e2d30]">
+                    CPT Code
+                  </span>
+                  <input
+                    type="text"
+                    value={createCaseForm.cptCode}
+                    onChange={(event) =>
+                      handleCreateCaseFieldChange("cptCode", event.currentTarget.value)
+                    }
+                    className="w-full rounded-2xl border border-[#d7d8da] bg-[#f8f8f9] px-4 py-3 text-sm text-[#414042] outline-none transition focus:border-[#00ff7d] focus:bg-white"
+                    placeholder="72148"
+                  />
+                  {createCaseFormErrors.cptCode && (
+                    <p className="mt-2 text-sm text-[#9b2c2c]">
+                      {createCaseFormErrors.cptCode}
+                    </p>
+                  )}
+                </label>
+
+                <div className="flex flex-wrap items-center justify-end gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={closeCreateCaseModal}
+                    disabled={createCaseLoading}
+                    className="rounded-full border border-[#d7d8da] bg-white px-5 py-2.5 text-sm font-semibold text-[#414042] transition hover:border-[#6dffb5] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={createCaseLoading}
+                    className="rounded-full bg-[#00ff7d] px-5 py-2.5 text-sm font-semibold text-[#414042] transition hover:bg-[#6dffb5] disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    Continue to documents
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
         )}
       </div>
     </div>
