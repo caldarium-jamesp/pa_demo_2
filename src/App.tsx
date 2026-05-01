@@ -1,5 +1,5 @@
 import wordmarkLogo from "./assets/name_logo.png";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type CaseSummary = {
   case_id: string;
@@ -40,22 +40,43 @@ type ConceptMatch = {
 type ClauseEvaluation = {
   clause_id: string;
   clause_type: string;
-  status: boolean;
+  status: string;
   policy_text: string;
   missing_concepts: string[];
   matched_concepts: ConceptMatch[];
 };
 
+type EvidenceClause = {
+  clause_id: string;
+  policy_text: string;
+  status: string;
+};
+
+type EvidenceCategoryReview = {
+  evidence_category: string;
+  status: string;
+  clauses: EvidenceClause[];
+};
+
 type AnalysisResponse = {
   case_id: string;
+  evidence_review?: EvidenceCategoryReview[];
   approval_clauses: ClauseEvaluation[];
-  exclusion_clauses: ClauseEvaluation[];
+  exclusion_clauses?: ClauseEvaluation[];
   pa_required?: boolean;
   coverage_status?: string;
+  evaluation_summary?: string;
 };
 
 type UploadFilesResponse = {
   case_id: string;
+  message: string;
+};
+
+type PARequiredResponse = {
+  payer: string;
+  cpt_code: string;
+  pa_required: boolean;
   message: string;
 };
 
@@ -124,29 +145,6 @@ function formatCaseStatusLabel(status: string): string {
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
-function getStatusFromConfidence(confidence: number): string {
-  if (confidence >= 0.9) {
-    return "Present";
-  }
-
-  if (confidence >= 0.8) {
-    return "Needs Review";
-  }
-
-  return "Missing";
-}
-
-function getStatusBadgeClasses(status: string): string {
-  if (status === "Present") {
-    return "border-[#6dffb5] bg-[#ecfff5]";
-  }
-
-  if (status === "Needs Review") {
-    return "border-[#ffd08a] bg-[#fff6e8]";
-  }
-
-  return "border-[#ffc6c6] bg-[#fff1f1]";
-}
 
 async function extractErrorMessage(
   response: Response,
@@ -215,6 +213,10 @@ function App() {
   const [createCaseFormErrors, setCreateCaseFormErrors] = useState<
     CreateCaseFormErrors
   >({});
+  const [paCheckLoading, setPaCheckLoading] = useState(false);
+  const [viewMode, setViewMode] = useState<"simple" | "detailed">("simple");
+  const [expandedClauseIds, setExpandedClauseIds] = useState<Record<string, boolean>>({});
+  const [paNotRequiredResult, setPaNotRequiredResult] = useState<PARequiredResponse | null>(null);
   const [analysisResultsByCaseId, setAnalysisResultsByCaseId] = useState<
     Record<string, AnalysisResponse>
   >({});
@@ -223,9 +225,6 @@ function App() {
   >({});
   const [analysisErrorByCaseId, setAnalysisErrorByCaseId] = useState<
     Record<string, string | null>
-  >({});
-  const [expandedResultRowIds, setExpandedResultRowIds] = useState<
-    Record<string, boolean>
   >({});
 
   const selectedCase = useMemo(
@@ -236,63 +235,12 @@ function App() {
     () => (selectedCaseId ? analysisResultsByCaseId[selectedCaseId] ?? null : null),
     [analysisResultsByCaseId, selectedCaseId],
   );
-  const satisfiedClauses = useMemo(() => {
-    if (!selectedCaseResult) {
-      return [];
-    }
-
-    const approved = selectedCaseResult.approval_clauses.filter(
-      (clause) => clause.status === true,
-    );
-    const excluded = selectedCaseResult.exclusion_clauses.filter(
-      (clause) => clause.status === true,
-    );
-
-    return [...approved, ...excluded];
-  }, [selectedCaseResult]);
-  const matchedConceptRows = useMemo(
-    () =>
-      satisfiedClauses
-        .flatMap((clause) =>
-          clause.matched_concepts.map((match, matchIndex) => ({
-            row_id: `${clause.clause_id}-${matchIndex}`,
-            clause_id: clause.clause_id,
-            section: match.section,
-            concept_id: match.concept_id,
-            confidence: match.confidence,
-            evidence_text: match.evidence_text,
-            policy_text: clause.policy_text,
-          })),
-        )
-        .sort((a, b) => {
-          const sectionCompare = (a.section || "").localeCompare(
-            b.section || "",
-            undefined,
-            { sensitivity: "base" },
-          );
-          if (sectionCompare !== 0) {
-            return sectionCompare;
-          }
-
-          return a.concept_id.localeCompare(b.concept_id, undefined, {
-            sensitivity: "base",
-          });
-        }),
-    [satisfiedClauses],
-  );
   const selectedCaseAnalysisLoading = selectedCaseId
     ? analysisLoadingByCaseId[selectedCaseId] === true
     : false;
   const selectedCaseAnalysisError = selectedCaseId
     ? analysisErrorByCaseId[selectedCaseId] ?? null
     : null;
-
-  const toggleResultRowExpanded = useCallback((rowId: string) => {
-    setExpandedResultRowIds((current) => ({
-      ...current,
-      [rowId]: !current[rowId],
-    }));
-  }, []);
 
   const runCaseAnalysis = useCallback(async (caseId: string) => {
     setAnalysisLoadingByCaseId((current) => ({
@@ -490,7 +438,7 @@ function App() {
   ]);
 
   useEffect(() => {
-    setExpandedResultRowIds({});
+    setExpandedClauseIds({});
   }, [selectedCaseId]);
 
   const handleBackToCaseList = useCallback(() => {
@@ -527,7 +475,7 @@ function App() {
     }));
   }
 
-  function handleCreateCaseDetailsSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handleCreateCaseDetailsSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const errors = validateCreateCaseForm(createCaseForm);
@@ -537,6 +485,28 @@ function App() {
     }
 
     setCreateCaseFormErrors({});
+    setPaCheckLoading(true);
+
+    try {
+      const queryParams = new URLSearchParams({
+        payer: createCaseForm.payer,
+        cpt_code: createCaseForm.cptCode.trim(),
+      });
+      const response = await fetch(`${API_BASE_URL}/prior-auth-required?${queryParams.toString()}`);
+      if (response.ok) {
+        const paResult = (await response.json()) as PARequiredResponse;
+        if (!paResult.pa_required) {
+          setIsCreateCaseModalOpen(false);
+          setPaNotRequiredResult(paResult);
+          return;
+        }
+      }
+    } catch {
+      // PA check failed — proceed normally
+    } finally {
+      setPaCheckLoading(false);
+    }
+
     setIsCreateCaseModalOpen(false);
     fileInputRef.current?.click();
   }
@@ -638,7 +608,7 @@ function App() {
                   ? "Choose a preloaded case or upload a new case by selecting the case documents."
                     : activePage === "document"
                       ? "Inspect case documents directly from the backend."
-                      : "Review approval and exclusion clause status."}
+                      : "Review summary of case analysis."}
               </h1>
               {activePage === "cases" && (
                 <p className="max-w-2xl text-base text-[#808184]">
@@ -867,9 +837,6 @@ function App() {
                 <p className="text-xs uppercase tracking-[0.3em] text-[#808184]">
                   Case results
                 </p>
-                <p className="mt-2 text-xs font-semibold uppercase tracking-[0.2em] text-[#808184]">
-                  {selectedCase ? `CPT-${selectedCase.cpt_code}` : "CPT"}
-                </p>
                 <h2 className="mt-2 text-2xl font-semibold text-[#2e2d30]">
                   {selectedCase
                     ? `${selectedCase.patient_name || "Unknown patient"}`
@@ -878,10 +845,37 @@ function App() {
               </div>
               <div className="flex flex-wrap items-center gap-3">
                 {selectedCase && (
-                  <span className="rounded-full border border-[#6dffb5] bg-[#f3fff8] px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] text-[#2e2d30]">
-                    {formatPayerLabel(selectedCase.payer)}
-                  </span>
+                  <>
+                    <span className="rounded-full border border-[#e0e0e2] bg-[#f8f8f9] px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] text-[#2e2d30]">
+                      CPT {selectedCase.cpt_code}
+                    </span>
+                    <span className="rounded-full border border-[#6dffb5] bg-[#f3fff8] px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] text-[#2e2d30]">
+                      {formatPayerLabel(selectedCase.payer)}
+                    </span>
+                  </>
                 )}
+                <div className="flex items-center gap-2">
+                  <span className={`text-xs font-semibold uppercase tracking-[0.2em] transition-colors ${viewMode === "simple" ? "text-[#2e2d30]" : "text-[#b0b0b3]"}`}>
+                    Simple
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setViewMode(v => v === "simple" ? "detailed" : "simple")}
+                    aria-label="Toggle view mode"
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full transition-colors duration-200 ${
+                      viewMode === "detailed" ? "bg-[#00ff7d]" : "bg-[#d1d1d6]"
+                    }`}
+                  >
+                    <span
+                      className={`absolute h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-200 ${
+                        viewMode === "detailed" ? "translate-x-[22px]" : "translate-x-0.5"
+                      }`}
+                    />
+                  </button>
+                  <span className={`text-xs font-semibold uppercase tracking-[0.2em] transition-colors ${viewMode === "detailed" ? "text-[#2e2d30]" : "text-[#b0b0b3]"}`}>
+                    Detailed
+                  </span>
+                </div>
                 {selectedCaseId && (
                   <button
                     type="button"
@@ -928,91 +922,149 @@ function App() {
               </p>
             )}
 
-            {selectedCaseResult && satisfiedClauses.length === 0 && (
+            {selectedCaseResult && selectedCaseResult.evaluation_summary && (
+              <div className="mt-6 overflow-hidden rounded-2xl border border-[#e0e0e2] bg-white">
+                <div className="border-b border-[#e0e0e2] px-5 py-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.3em] text-[#808184]">
+                    AI Summary
+                  </p>
+                </div>
+                <p className="px-5 py-4 text-sm leading-relaxed text-[#414042]">
+                  {selectedCaseResult.evaluation_summary}
+                </p>
+              </div>
+            )}
+
+            {selectedCaseResult && viewMode === "simple" && (!selectedCaseResult.evidence_review || selectedCaseResult.evidence_review.length === 0) && (
               <p className="mt-6 rounded-xl border border-[#e0e0e2] bg-[#f8f8f9] p-4 text-sm text-[#808184]">
-                No clauses with <code>status = true</code> were returned for this
-                case.
+                No evidence review data was returned for this case.
               </p>
             )}
 
-            {selectedCaseResult && satisfiedClauses.length > 0 && matchedConceptRows.length === 0 && (
-              <p className="mt-6 rounded-xl border border-[#e0e0e2] bg-[#f8f8f9] p-4 text-sm text-[#808184]">
-                No matched concepts were returned for clauses with <code>status = true</code>.
-              </p>
-            )}
-
-            {selectedCaseResult && matchedConceptRows.length > 0 && (
-              <div className="mt-6 overflow-x-auto rounded-2xl border border-[#e0e0e2] bg-[#f8f8f9]">
-                <table className="min-w-full border-collapse text-left text-sm">
-                  <thead>
-                    <tr className="border-b border-[#e0e0e2] bg-white">
-                      <th className="px-4 py-3 font-semibold uppercase tracking-[0.08em] text-[#808184]">
-                        Document
-                      </th>
-                      <th className="px-4 py-3 font-semibold uppercase tracking-[0.08em] text-[#808184]">
-                        Concept
-                      </th>
-                      <th className="px-4 py-3 font-semibold uppercase tracking-[0.08em] text-[#808184]">
-                        Status
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {matchedConceptRows.map((row, index) => {
-                      const status = getStatusFromConfidence(Number(row.confidence));
-
-                      return (
-                        <Fragment key={`${row.row_id}-${index}`}>
-                          <tr
-                            onClick={() => toggleResultRowExpanded(row.row_id)}
-                            className="cursor-pointer border-b border-[#e0e0e2] transition hover:bg-white"
+            {selectedCaseResult && viewMode === "simple" && selectedCaseResult.evidence_review && selectedCaseResult.evidence_review.length > 0 && (
+              <div className="mt-6 flex flex-col gap-4">
+                {selectedCaseResult.evidence_review.map((category) => (
+                  <div
+                    key={category.evidence_category}
+                    className="overflow-hidden rounded-2xl border border-[#e0e0e2] bg-[#f8f8f9]"
+                  >
+                    <div className="flex items-center justify-between gap-4 border-b border-[#e0e0e2] bg-white px-5 py-4">
+                      <h3 className="text-sm font-semibold text-[#2e2d30]">
+                        {formatConceptLabel(category.evidence_category)}
+                      </h3>
+                      <span
+                        className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#2e2d30] ${
+                          category.status === "Sufficient"
+                            ? "border-[#6dffb5] bg-[#ecfff5]"
+                            : category.status === "Partially sufficient"
+                              ? "border-[#ffd08a] bg-[#fff6e8]"
+                              : "border-[#ffc6c6] bg-[#fff1f1]"
+                        }`}
+                      >
+                        {category.status.charAt(0).toUpperCase() + category.status.slice(1)}
+                      </span>
+                    </div>
+                    <div className="divide-y divide-[#e0e0e2]">
+                      {category.clauses.map((clause) => (
+                        <div
+                          key={clause.clause_id}
+                          className="flex items-start justify-between gap-4 px-5 py-3"
+                        >
+                          <p className="text-sm text-[#414042]">{clause.policy_text}</p>
+                          <span
+                            className={`ml-4 inline-flex shrink-0 rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#2e2d30] ${
+                              clause.status === "satisfied"
+                                ? "border-[#6dffb5] bg-[#ecfff5]"
+                                : clause.status === "partial"
+                                  ? "border-[#ffd08a] bg-[#fff6e8]"
+                                  : "border-[#ffc6c6] bg-[#fff1f1]"
+                            }`}
                           >
-                            <td className="px-4 py-3 text-[#414042]">
-                              <span className="mr-2 inline-block w-4 text-[#808184]">
-                                {expandedResultRowIds[row.row_id] ? "-" : "+"}
-                              </span>
-                              {row.section || "-"}
-                            </td>
-                            <td className="px-4 py-3 text-[#414042]">
-                              {formatConceptLabel(row.concept_id)}
-                            </td>
-                            <td className="px-4 py-3 text-[#414042]">
-                              <span
-                                className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#2e2d30] ${getStatusBadgeClasses(status)}`}
-                              >
-                                {status}
-                              </span>
-                            </td>
-                          </tr>
-                          {expandedResultRowIds[row.row_id] && (
-                            <tr className="border-b border-[#e0e0e2] bg-white/70">
-                              <td colSpan={3} className="px-4 py-3 text-[#414042]">
-                                <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[#808184]">
-                                  Evidence Text
-                                </p>
-                                <p className="mt-1 whitespace-pre-wrap text-sm text-[#414042]">
-                                  {row.evidence_text || "-"}
-                                </p>
-                                <p className="mt-3 text-xs font-semibold uppercase tracking-[0.08em] text-[#808184]">
-                                  Policy Text
-                                </p>
-                                <p className="mt-1 whitespace-pre-wrap text-sm text-[#414042]">
-                                  {row.policy_text || "-"}
-                                </p>
-                                <p className="mt-3 text-xs font-semibold uppercase tracking-[0.08em] text-[#808184]">
-                                  Confidence Score
-                                </p>
-                                <p className="mt-1 text-sm text-[#414042]">
-                                  {Number(row.confidence).toFixed(2)}
-                                </p>
-                              </td>
-                            </tr>
-                          )}
-                        </Fragment>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                            {clause.status.charAt(0).toUpperCase() + clause.status.slice(1)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {selectedCaseResult && viewMode === "detailed" && (
+              <div className="mt-6 overflow-hidden rounded-2xl border border-[#e0e0e2]">
+                <div className="divide-y divide-[#e0e0e2]">
+                  {[
+                    ...(selectedCaseResult.approval_clauses ?? []),
+                    ...(selectedCaseResult.exclusion_clauses ?? []),
+                  ].map((clause) => {
+                    const hasMatches = clause.matched_concepts.length > 0;
+                    const isExpanded = expandedClauseIds[clause.clause_id] === true;
+                    return (
+                      <div key={clause.clause_id}>
+                        <div
+                          onClick={hasMatches ? () => setExpandedClauseIds((cur) => ({ ...cur, [clause.clause_id]: !cur[clause.clause_id] })) : undefined}
+                          className={`flex items-start gap-4 bg-white px-5 py-4 ${hasMatches ? "cursor-pointer hover:bg-[#f8f8f9]" : ""}`}
+                        >
+                          <span className="w-5 shrink-0 select-none text-center text-xl font-light leading-snug text-[#808184]">
+                            {hasMatches ? (isExpanded ? "−" : "+") : ""}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <span className="font-mono text-xs text-[#808184]">Policy Clause: </span>
+                            <span className="text-sm text-[#414042]">{clause.policy_text}</span>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <span
+                              className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#2e2d30] ${
+                                clause.clause_type === "approval"
+                                  ? "border-[#6dffb5] bg-[#ecfff5]"
+                                  : "border-[#ffd08a] bg-[#fff6e8]"
+                              }`}
+                            >
+                              {clause.clause_type.charAt(0).toUpperCase() + clause.clause_type.slice(1)}
+                            </span>
+                            <span
+                              className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#2e2d30] ${
+                                clause.status === "partial"
+                                  ? "border-[#ffd08a] bg-[#fff6e8]"
+                                  : clause.clause_type === "exclusion"
+                                    ? clause.status === "satisfied"
+                                      ? "border-[#ffc6c6] bg-[#fff1f1]"
+                                      : "border-[#6dffb5] bg-[#ecfff5]"
+                                    : clause.status === "satisfied"
+                                      ? "border-[#6dffb5] bg-[#ecfff5]"
+                                      : "border-[#ffc6c6] bg-[#fff1f1]"
+                              }`}
+                            >
+                              {clause.status.charAt(0).toUpperCase() + clause.status.slice(1)}
+                            </span>
+                          </div>
+                        </div>
+                        {isExpanded && (
+                          <div className="border-t border-[#e0e0e2] bg-[#f8f8f9] px-5 py-4">
+                            <div className="flex flex-col gap-2">
+                              {clause.matched_concepts.map((match, i) => (
+                                <div key={i} className="rounded-xl border border-[#e0e0e2] bg-white p-3">
+                                  <p className="text-xs font-semibold uppercase tracking-[0.1em] text-[#808184]">
+                                    Certainty:{" "}
+                                    <span className="font-normal normal-case tracking-normal text-[#414042]">
+                                      {match.certainty_level
+                                        ? match.certainty_level.charAt(0).toUpperCase() + match.certainty_level.slice(1)
+                                        : "—"}
+                                    </span>
+                                  </p>
+                                  <p className="mt-2 text-sm text-[#414042]">
+                                    <span className="font-mono text-xs text-[#808184]">Documented Evidence Text: </span>
+                                    {match.evidence_text}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </section>
@@ -1036,7 +1088,7 @@ function App() {
                 <button
                   type="button"
                   onClick={closeCreateCaseModal}
-                  disabled={createCaseLoading}
+                  disabled={createCaseLoading || paCheckLoading}
                   className="rounded-full border border-[#d7d8da] px-3 py-1 text-sm font-medium text-[#414042] transition hover:border-[#6dffb5] disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   Close
@@ -1108,17 +1160,17 @@ function App() {
                   <button
                     type="button"
                     onClick={closeCreateCaseModal}
-                    disabled={createCaseLoading}
+                    disabled={createCaseLoading || paCheckLoading}
                     className="rounded-full border border-[#d7d8da] bg-white px-5 py-2.5 text-sm font-semibold text-[#414042] transition hover:border-[#6dffb5] disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    disabled={createCaseLoading}
+                    disabled={createCaseLoading || paCheckLoading}
                     className="rounded-full bg-[#00ff7d] px-5 py-2.5 text-sm font-semibold text-[#414042] transition hover:bg-[#6dffb5] disabled:cursor-not-allowed disabled:opacity-70"
                   >
-                    Continue to documents
+                    {paCheckLoading ? "Checking..." : "Continue to documents"}
                   </button>
                 </div>
               </form>
@@ -1126,6 +1178,37 @@ function App() {
           </div>
         )}
       </div>
+
+      {paNotRequiredResult && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#2e2d30]/50 px-4 py-8 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-[28px] border border-[#d7d8da] bg-white p-6 shadow-[0_24px_60px_rgba(46,45,48,0.24)] sm:p-8">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs uppercase tracking-[0.3em] text-[#808184]">
+                  PA check result
+                </p>
+                <h2 className="mt-2 text-xl font-semibold text-[#2e2d30]">
+                  Prior authorization not required
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPaNotRequiredResult(null)}
+                className="rounded-full border border-[#d7d8da] px-3 py-1 text-sm font-medium text-[#414042] transition hover:border-[#6dffb5]"
+              >
+                Close
+              </button>
+            </div>
+            <p className="mt-4 text-sm text-[#414042]">
+              Prior authorization not required for{" "}
+              <span className="font-semibold">{paNotRequiredResult.cpt_code}</span>{" "}
+              under{" "}
+              <span className="font-semibold">{paNotRequiredResult.payer}</span>:{" "}
+              {paNotRequiredResult.message}
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
