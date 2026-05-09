@@ -66,6 +66,8 @@ type AnalysisResponse = {
   pa_required?: boolean;
   coverage_status?: string;
   evaluation_summary?: string;
+  evaluation_result_summary?: string;
+  evaluation_rule?: { display?: string };
 };
 
 type UploadFilesResponse = {
@@ -216,6 +218,7 @@ function App() {
   const [paCheckLoading, setPaCheckLoading] = useState(false);
   const [viewMode, setViewMode] = useState<"simple" | "detailed">("simple");
   const [expandedClauseIds, setExpandedClauseIds] = useState<Record<string, boolean>>({});
+  const [unsatisfiedClausesExpanded, setUnsatisfiedClausesExpanded] = useState(false);
   const [paNotRequiredResult, setPaNotRequiredResult] = useState<PARequiredResponse | null>(null);
   const [analysisResultsByCaseId, setAnalysisResultsByCaseId] = useState<
     Record<string, AnalysisResponse>
@@ -439,6 +442,7 @@ function App() {
 
   useEffect(() => {
     setExpandedClauseIds({});
+    setUnsatisfiedClausesExpanded(false);
   }, [selectedCaseId]);
 
   const handleBackToCaseList = useCallback(() => {
@@ -567,6 +571,7 @@ function App() {
         ...current,
         [payload.case_id]: null,
       }));
+      await fetchCases();
       setSelectedCaseId(payload.case_id);
       setActivePage("results");
     } catch (error) {
@@ -922,16 +927,29 @@ function App() {
               </p>
             )}
 
-            {selectedCaseResult && selectedCaseResult.evaluation_summary && (
-              <div className="mt-6 overflow-hidden rounded-2xl border border-[#e0e0e2] bg-white">
-                <div className="border-b border-[#e0e0e2] px-5 py-4">
-                  <p className="text-xs font-semibold uppercase tracking-[0.3em] text-[#808184]">
-                    AI Summary
-                  </p>
+            {selectedCaseResult && selectedCaseResult.evaluation_result_summary && (
+              <h3 className="mt-6 text-xs font-semibold uppercase tracking-[0.3em] text-[#808184]">
+                Overview
+              </h3>
+            )}
+            {selectedCaseResult && selectedCaseResult.evaluation_result_summary && (
+              <div className="mt-3 flex flex-col gap-3 overflow-hidden rounded-2xl border border-[#e0e0e2] bg-white px-5 py-4">
+                <div>
+                  <span className="font-mono text-xs font-bold text-[#808184]">Policy Compliance: </span>
+                  <span className="text-sm leading-relaxed text-[#414042]">{selectedCaseResult.evaluation_result_summary}</span>
                 </div>
-                <p className="px-5 py-4 text-sm leading-relaxed text-[#414042]">
-                  {selectedCaseResult.evaluation_summary}
-                </p>
+                {selectedCaseResult.evaluation_rule?.display && (
+                  <div>
+                    <span className="font-mono text-xs font-bold text-[#808184]">Policy Clause Requirements: </span>
+                    <span className="text-sm leading-relaxed text-[#414042]">{selectedCaseResult.evaluation_rule.display}</span>
+                  </div>
+                )}
+                {selectedCaseResult.evaluation_summary && (
+                  <div>
+                    <span className="font-mono text-xs font-bold text-[#808184]">AI Summary: </span>
+                    <span className="text-sm leading-relaxed text-[#414042]">{selectedCaseResult.evaluation_summary}</span>
+                  </div>
+                )}
               </div>
             )}
 
@@ -991,82 +1009,113 @@ function App() {
             )}
 
             {selectedCaseResult && viewMode === "detailed" && (
-              <div className="mt-6 overflow-hidden rounded-2xl border border-[#e0e0e2]">
-                <div className="divide-y divide-[#e0e0e2]">
-                  {[
-                    ...(selectedCaseResult.approval_clauses ?? []),
-                    ...(selectedCaseResult.exclusion_clauses ?? []),
-                  ].map((clause) => {
-                    const hasMatches = clause.matched_concepts.length > 0;
-                    const isExpanded = expandedClauseIds[clause.clause_id] === true;
-                    return (
-                      <div key={clause.clause_id}>
+              <h3 className="mt-6 text-xs font-semibold uppercase tracking-[0.3em] text-[#808184]">
+                Clause by Clause Breakdown
+              </h3>
+            )}
+            {selectedCaseResult && viewMode === "detailed" && (() => {
+              const allClauses = [
+                ...(selectedCaseResult.approval_clauses ?? []),
+                ...(selectedCaseResult.exclusion_clauses ?? []),
+              ];
+              const satisfiedClauses = allClauses.filter((c) => c.status !== "unsatisfied");
+              const unsatisfiedClauses = allClauses.filter((c) => c.status === "unsatisfied");
+
+              const renderClause = (clause: ClauseEvaluation) => {
+                const hasMatches = clause.matched_concepts.length > 0;
+                const isExpanded = expandedClauseIds[clause.clause_id] === true;
+                return (
+                  <div key={clause.clause_id}>
+                    <div
+                      onClick={hasMatches ? () => setExpandedClauseIds((cur) => ({ ...cur, [clause.clause_id]: !cur[clause.clause_id] })) : undefined}
+                      className={`flex items-start gap-4 bg-white px-5 py-4 ${hasMatches ? "cursor-pointer hover:bg-[#f8f8f9]" : ""}`}
+                    >
+                      <span className="w-5 shrink-0 select-none text-center text-xl font-light leading-snug text-[#808184]">
+                        {hasMatches ? (isExpanded ? "−" : "+") : ""}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <span className="font-mono text-xs text-[#808184]">Policy Clause: </span>
+                        <span className="text-sm text-[#414042]">{clause.policy_text}</span>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <span
+                          className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#2e2d30] ${
+                            clause.clause_type === "approval"
+                              ? "border-[#6dffb5] bg-[#ecfff5]"
+                              : "border-[#ffd08a] bg-[#fff6e8]"
+                          }`}
+                        >
+                          {clause.clause_type.charAt(0).toUpperCase() + clause.clause_type.slice(1)}
+                        </span>
+                        <span
+                          className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#2e2d30] ${
+                            clause.status === "partial"
+                              ? "border-[#ffd08a] bg-[#fff6e8]"
+                              : clause.clause_type === "exclusion"
+                                ? clause.status === "satisfied"
+                                  ? "border-[#e0e0e2] bg-[#f8f8f9]"
+                                  : "border-[#6dffb5] bg-[#ecfff5]"
+                                : clause.status === "satisfied"
+                                  ? "border-[#6dffb5] bg-[#ecfff5]"
+                                  : "border-[#e0e0e2] bg-[#f8f8f9]"
+                          }`}
+                        >
+                          {clause.status.charAt(0).toUpperCase() + clause.status.slice(1)}
+                        </span>
+                      </div>
+                    </div>
+                    {isExpanded && (
+                      <div className="border-t border-[#e0e0e2] bg-[#f8f8f9] px-5 py-4">
+                        <div className="flex flex-col gap-2">
+                          {clause.matched_concepts.map((match, i) => (
+                            <div key={i} className="rounded-xl border border-[#e0e0e2] bg-white p-3">
+                              <p className="text-xs font-semibold uppercase tracking-[0.1em] text-[#808184]">
+                                Certainty:{" "}
+                                <span className="font-normal normal-case tracking-normal text-[#414042]">
+                                  {match.certainty_level
+                                    ? match.certainty_level.charAt(0).toUpperCase() + match.certainty_level.slice(1)
+                                    : "—"}
+                                </span>
+                              </p>
+                              <p className="mt-2 text-sm text-[#414042]">
+                                <span className="font-mono text-xs text-[#808184]">Documented Evidence Text: </span>
+                                {match.evidence_text}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              };
+
+              return (
+                <div className="mt-3 overflow-hidden rounded-2xl border border-[#e0e0e2]">
+                  <div className="divide-y divide-[#e0e0e2]">
+                    {satisfiedClauses.map(renderClause)}
+                    {unsatisfiedClauses.length > 0 && (
+                      <>
                         <div
-                          onClick={hasMatches ? () => setExpandedClauseIds((cur) => ({ ...cur, [clause.clause_id]: !cur[clause.clause_id] })) : undefined}
-                          className={`flex items-start gap-4 bg-white px-5 py-4 ${hasMatches ? "cursor-pointer hover:bg-[#f8f8f9]" : ""}`}
+                          onClick={() => setUnsatisfiedClausesExpanded((v) => !v)}
+                          className="flex cursor-pointer items-center gap-4 bg-[#f8f8f9] px-5 py-4 hover:bg-[#f0f0f1]"
                         >
                           <span className="w-5 shrink-0 select-none text-center text-xl font-light leading-snug text-[#808184]">
-                            {hasMatches ? (isExpanded ? "−" : "+") : ""}
+                            {unsatisfiedClausesExpanded ? "−" : "+"}
                           </span>
-                          <div className="min-w-0 flex-1">
-                            <span className="font-mono text-xs text-[#808184]">Policy Clause: </span>
-                            <span className="text-sm text-[#414042]">{clause.policy_text}</span>
-                          </div>
-                          <div className="flex shrink-0 items-center gap-2">
-                            <span
-                              className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#2e2d30] ${
-                                clause.clause_type === "approval"
-                                  ? "border-[#6dffb5] bg-[#ecfff5]"
-                                  : "border-[#ffd08a] bg-[#fff6e8]"
-                              }`}
-                            >
-                              {clause.clause_type.charAt(0).toUpperCase() + clause.clause_type.slice(1)}
-                            </span>
-                            <span
-                              className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#2e2d30] ${
-                                clause.status === "partial"
-                                  ? "border-[#ffd08a] bg-[#fff6e8]"
-                                  : clause.clause_type === "exclusion"
-                                    ? clause.status === "satisfied"
-                                      ? "border-[#ffc6c6] bg-[#fff1f1]"
-                                      : "border-[#6dffb5] bg-[#ecfff5]"
-                                    : clause.status === "satisfied"
-                                      ? "border-[#6dffb5] bg-[#ecfff5]"
-                                      : "border-[#ffc6c6] bg-[#fff1f1]"
-                              }`}
-                            >
-                              {clause.status.charAt(0).toUpperCase() + clause.status.slice(1)}
-                            </span>
-                          </div>
+                          <span className="text-sm font-semibold text-[#808184]">
+                            {unsatisfiedClausesExpanded
+                              ? `Hide ${unsatisfiedClauses.length} unsatisfied clause${unsatisfiedClauses.length === 1 ? "" : "s"}`
+                              : `+ ${unsatisfiedClauses.length} more unsatisfied clause${unsatisfiedClauses.length === 1 ? "" : "s"}`}
+                          </span>
                         </div>
-                        {isExpanded && (
-                          <div className="border-t border-[#e0e0e2] bg-[#f8f8f9] px-5 py-4">
-                            <div className="flex flex-col gap-2">
-                              {clause.matched_concepts.map((match, i) => (
-                                <div key={i} className="rounded-xl border border-[#e0e0e2] bg-white p-3">
-                                  <p className="text-xs font-semibold uppercase tracking-[0.1em] text-[#808184]">
-                                    Certainty:{" "}
-                                    <span className="font-normal normal-case tracking-normal text-[#414042]">
-                                      {match.certainty_level
-                                        ? match.certainty_level.charAt(0).toUpperCase() + match.certainty_level.slice(1)
-                                        : "—"}
-                                    </span>
-                                  </p>
-                                  <p className="mt-2 text-sm text-[#414042]">
-                                    <span className="font-mono text-xs text-[#808184]">Documented Evidence Text: </span>
-                                    {match.evidence_text}
-                                  </p>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                        {unsatisfiedClausesExpanded && unsatisfiedClauses.map(renderClause)}
+                      </>
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
           </section>
         )}
 
