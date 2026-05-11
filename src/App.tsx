@@ -611,7 +611,7 @@ function App() {
 
           <div className="grid gap-8 lg:grid-cols-[1.1fr_0.9fr]">
             <div className="flex flex-col gap-6">
-              <h1 className="text-4xl font-semibold text-[#2e2d30] sm:text-5xl">
+              <h1 className={`font-semibold text-[#2e2d30] ${activePage === "results" ? "text-3xl sm:text-4xl" : "text-4xl sm:text-5xl"}`}>
                 {activePage === "cases"
                   ? "Choose a preloaded case or upload a new case by selecting the case documents."
                     : activePage === "document"
@@ -1080,6 +1080,12 @@ function App() {
                                 <span className="font-mono text-xs text-[#808184]">Documented Evidence Text: </span>
                                 {match.evidence_text}
                               </p>
+                              {match.section && (
+                                <p className="mt-1 text-sm text-[#414042]">
+                                  <span className="font-mono text-xs text-[#808184]">Document Source: </span>
+                                  {match.section}
+                                </p>
+                              )}
                             </div>
                           ))}
                         </div>
