@@ -1,4 +1,7 @@
 import wordmarkLogo from "./assets/name_logo.png";
+import checkIcon from "./assets/check.png";
+import crossIcon from "./assets/cross.png";
+import cautionIcon from "./assets/caution.png";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type CaseSummary = {
@@ -989,17 +992,17 @@ function App() {
                           className="flex items-start justify-between gap-4 px-5 py-3"
                         >
                           <p className="text-sm text-[#414042]">{clause.policy_text}</p>
-                          <span
-                            className={`ml-4 inline-flex shrink-0 rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#2e2d30] ${
+                          <img
+                            src={
                               clause.status === "satisfied"
-                                ? "border-[#6dffb5] bg-[#ecfff5]"
+                                ? checkIcon
                                 : clause.status === "partial"
-                                  ? "border-[#ffd08a] bg-[#fff6e8]"
-                                  : "border-[#ffc6c6] bg-[#fff1f1]"
-                            }`}
-                          >
-                            {clause.status.charAt(0).toUpperCase() + clause.status.slice(1)}
-                          </span>
+                                  ? cautionIcon
+                                  : crossIcon
+                            }
+                            alt={clause.status}
+                            className="ml-4 h-6 w-6 shrink-0"
+                          />
                         </div>
                       ))}
                     </div>
@@ -1039,29 +1042,25 @@ function App() {
                       </div>
                       <div className="flex shrink-0 items-center gap-2">
                         <span
-                          className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#2e2d30] ${
-                            clause.clause_type === "approval"
-                              ? "border-[#6dffb5] bg-[#ecfff5]"
-                              : "border-[#ffd08a] bg-[#fff6e8]"
-                          }`}
+                          className="inline-flex rounded-full border border-[#d1d1d4] bg-[#f4f4f5] px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#808184]"
                         >
                           {clause.clause_type.charAt(0).toUpperCase() + clause.clause_type.slice(1)}
                         </span>
-                        <span
-                          className={`inline-flex rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#2e2d30] ${
+                        <img
+                          src={
                             clause.status === "partial"
-                              ? "border-[#ffd08a] bg-[#fff6e8]"
+                              ? cautionIcon
                               : clause.clause_type === "exclusion"
                                 ? clause.status === "satisfied"
-                                  ? "border-[#e0e0e2] bg-[#f8f8f9]"
-                                  : "border-[#6dffb5] bg-[#ecfff5]"
+                                  ? crossIcon
+                                  : checkIcon
                                 : clause.status === "satisfied"
-                                  ? "border-[#6dffb5] bg-[#ecfff5]"
-                                  : "border-[#e0e0e2] bg-[#f8f8f9]"
-                          }`}
-                        >
-                          {clause.status.charAt(0).toUpperCase() + clause.status.slice(1)}
-                        </span>
+                                  ? checkIcon
+                                  : crossIcon
+                          }
+                          alt={clause.status}
+                          className="h-6 w-6 shrink-0 mix-blend-multiply"
+                        />
                       </div>
                     </div>
                     {isExpanded && (
